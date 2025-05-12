@@ -1,1 +1,5 @@
 .idea
+venv38/
+src/__pycache__/
+src/data_io/__pycache__/
+src/model_lib/__pycache__/

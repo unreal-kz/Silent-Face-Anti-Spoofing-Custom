@@ -39,7 +39,7 @@ class TrainMain:
                                    momentum=self.conf.momentum)
 
         self.schedule_lr = optim.lr_scheduler.MultiStepLR(
-            self.optimizer, self.conf.milestones, self.conf.gamma, - 1)
+            self.optimizer, self.conf.milestones, self.conf.gamma)
 
         print("lr: ", self.conf.lr)
         print("epochs: ", self.conf.epochs)

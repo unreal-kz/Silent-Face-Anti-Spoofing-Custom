@@ -53,8 +53,21 @@ class Detection:
 class AntiSpoofPredict(Detection):
     def __init__(self, device_id):
         super(AntiSpoofPredict, self).__init__()
-        self.device = torch.device("cuda:{}".format(device_id)
-                                   if torch.cuda.is_available() else "cpu")
+        # Use CPU if device_id is negative or if CUDA is not available
+        if device_id < 0 or not torch.cuda.is_available():
+            self.device = torch.device("cpu")
+            print("Using CPU for inference")
+        else:
+            try:
+                # Try to use the specified GPU
+                self.device = torch.device(f"cuda:{device_id}")
+                # Test if this device is actually available
+                torch.zeros(1).to(self.device)
+                print(f"Using GPU (cuda:{device_id}) for inference")
+            except Exception as e:
+                print(f"Error initializing CUDA device {device_id}: {e}")
+                print("Falling back to CPU")
+                self.device = torch.device("cpu")
 
     def _load_model(self, model_path):
         # define model
@@ -66,7 +79,7 @@ class AntiSpoofPredict(Detection):
         # load model weight
         state_dict = torch.load(model_path, map_location=self.device)
         keys = iter(state_dict)
-        first_layer_name = keys.__next__()
+        first_layer_name = next(keys)
         if first_layer_name.find('module.') >= 0:
             from collections import OrderedDict
             new_state_dict = OrderedDict()

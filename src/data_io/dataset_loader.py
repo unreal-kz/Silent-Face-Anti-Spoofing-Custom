@@ -29,5 +29,5 @@ def get_train_loader(conf):
         batch_size=conf.batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=16)
+        num_workers=8)
     return train_loader
