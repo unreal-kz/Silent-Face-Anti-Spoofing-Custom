@@ -22,7 +22,6 @@ def check_image(image):
     else:
         return True
 
-
 def is_running_in_wsl():
     """Check if running in WSL"""
     import platform

@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  liveness-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9001:9001"
+    volumes:
+      - ./temp_uploads:/app/temp_uploads
+    restart: unless-stopped
