@@ -46,7 +46,7 @@ def convert_windows_path_if_wsl(path):
                 print(f"Warning: Failed to convert Windows path: {e}")
     return path
 
-def test_video(video_path, model_dir, device_id, output_path=None, display=True):
+def test_video(video_path, model_dir, device_id, output_path=None, display=True, confidence_threshold=0.65, smoothing_window=5):
     # Force CPU usage if CUDA is causing issues
     if device_id >= 0:
         try:
@@ -90,7 +90,10 @@ def test_video(video_path, model_dir, device_id, output_path=None, display=True)
     frame_count = 0
     processing_times = []
     
-    print("Processing video...")
+    # For temporal smoothing
+    recent_predictions = []  # Store recent predictions for smoothing
+    
+    print(f"Processing video with confidence threshold: {confidence_threshold} and smoothing window: {smoothing_window}")
     
     while True:
         ret, frame = cap.read()
@@ -98,7 +101,7 @@ def test_video(video_path, model_dir, device_id, output_path=None, display=True)
             break
         
         frame_count += 1
-        if frame_count % 5 != 0:  # Process every 5th frame to speed up
+        if frame_count % 3 != 0:  # Process every 3rd frame instead of 5th for better accuracy
             continue
         
         start_time = time.time()
@@ -125,11 +128,28 @@ def test_video(video_path, model_dir, device_id, output_path=None, display=True)
             img = image_cropper.crop(**param)
             prediction += model_test.predict(img, os.path.join(model_dir, model_name))
         
-        # Determine if real or fake face
-        label = np.argmax(prediction)
-        value = prediction[0][label]/2
+        # Store the raw prediction for temporal smoothing
+        recent_predictions.append(prediction)
+        if len(recent_predictions) > smoothing_window:
+            recent_predictions.pop(0)  # Remove oldest prediction
         
-        if label == 1:
+        # Apply temporal smoothing by averaging recent predictions
+        if len(recent_predictions) > 0:
+            smoothed_prediction = np.mean(recent_predictions, axis=0)
+        else:
+            smoothed_prediction = prediction
+        
+        # Determine if real or fake face with confidence threshold
+        label = np.argmax(smoothed_prediction)
+        value = smoothed_prediction[0][label]/2
+        
+        # Apply confidence threshold (label 1 is real, label 0 is fake)
+        if label == 1 and value < confidence_threshold:
+            # If classified as real but confidence is low, mark as uncertain/fake
+            label = 0
+            result_text = f"Uncertain (Low Conf): {value:.2f}"
+            color = (0, 165, 255)  # Orange for uncertain
+        elif label == 1:
             result_text = f"Real Face: {value:.2f}"
             color = (0, 255, 0)  # Green for real
         else:
@@ -205,6 +225,16 @@ if __name__ == "__main__":
         "--no_display",
         action="store_true",
         help="disable display of video processing")
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.65,
+        help="confidence threshold for real face detection (0.0-1.0)")
+    parser.add_argument(
+        "--smoothing",
+        type=int,
+        default=5,
+        help="number of frames to use for temporal smoothing")
     
     args = parser.parse_args()
     
@@ -229,4 +259,4 @@ if __name__ == "__main__":
         print(f"Display disabled - setting default output path to: {output_path}")
     
     test_video(args.video_path, args.model_dir, device_id, 
-               output_path, display)
+               output_path, display, args.confidence, args.smoothing)
