@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 
 # Copy the application code
 COPY api.py .
+COPY websocket-client.html .
 COPY src/ ./src/
 COPY resources/ ./resources/
 
