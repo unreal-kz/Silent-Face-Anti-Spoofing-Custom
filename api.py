@@ -5,10 +5,11 @@ import os
 import cv2
 import time
 import uuid
+import json
 import numpy as np
 import uvicorn
-from typing import Optional, Dict, List
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from typing import Optional, Dict, List, Any
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -58,12 +59,30 @@ class VideoDetectionResponse(BaseModel):
     processing_time_ms: float
     video_info: Dict
 
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_json(self, websocket: WebSocket, data: Dict):
+        await websocket.send_json(data)
+
 # Create FastAPI app
 app = FastAPI(
     title="Face Liveness Detection API",
-    description="API for detecting fake/real faces in images and videos",
+    description="API for detecting fake/real faces in images and videos with real-time WebSocket support",
     version="1.0.0"
 )
+
+# Create connection manager instance
+manager = ConnectionManager()
 
 # Add CORS middleware
 app.add_middleware(
@@ -499,6 +518,146 @@ async def download_file(filename: str):
         filename=filename,
         media_type="application/octet-stream"
     )
+
+@app.websocket("/ws/detect")
+async def websocket_detect(websocket: WebSocket):
+    """WebSocket endpoint for real-time liveness detection.
+    
+    Clients should send base64-encoded image frames and will receive liveness detection results.
+    """
+    # Initialize detector
+    model_test = AntiSpoofPredict(-1)  # Use CPU for inference
+    image_cropper = CropImage()
+    
+    # For temporal smoothing
+    recent_predictions = []
+    
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_json()
+            
+            # Extract parameters
+            confidence_threshold = data.get("confidence_threshold", CONFIDENCE_THRESHOLD)
+            smoothing_window = data.get("smoothing_window", SMOOTHING_WINDOW)
+            include_annotated_image = data.get("include_annotated_image", False)
+            
+            # Decode base64 image
+            try:
+                image_data = base64.b64decode(data["image"])
+                nparr = np.frombuffer(image_data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    await manager.send_json(websocket, {"error": "Invalid image data"})
+                    continue
+            except Exception as e:
+                await manager.send_json(websocket, {"error": f"Error decoding image: {str(e)}"})
+                continue
+            
+            # Start timing
+            start_time = time.time()
+            
+            try:
+                # Get face bounding box
+                image_bbox = model_test.get_bbox(frame)
+                
+                # Initialize prediction array
+                prediction = np.zeros((1, 3))
+                
+                # Process with all models in the model directory
+                for model_name in os.listdir(MODEL_DIR):
+                    h_input, w_input, model_type, scale = parse_model_name(model_name)
+                    param = {
+                        "org_img": frame,
+                        "bbox": image_bbox,
+                        "scale": scale,
+                        "out_w": w_input,
+                        "out_h": h_input,
+                        "crop": True,
+                    }
+                    if scale is None:
+                        param["crop"] = False
+                    img = image_cropper.crop(**param)
+                    prediction += model_test.predict(img, os.path.join(MODEL_DIR, model_name))
+                
+                # Store the raw prediction for temporal smoothing
+                recent_predictions.append(prediction)
+                if len(recent_predictions) > smoothing_window:
+                    recent_predictions.pop(0)  # Remove oldest prediction
+                
+                # Apply temporal smoothing by averaging recent predictions
+                if len(recent_predictions) > 0:
+                    smoothed_prediction = np.mean(recent_predictions, axis=0)
+                else:
+                    smoothed_prediction = prediction
+                
+                # Determine if real or fake face with confidence threshold
+                label = np.argmax(smoothed_prediction)
+                value = smoothed_prediction[0][label]/2
+                
+                # Apply confidence threshold (label 1 is real, label 0 is fake)
+                is_real = label == 1
+                if is_real and value < confidence_threshold:
+                    # If classified as real but confidence is low, mark as uncertain/fake
+                    is_real = False
+                    label = 0
+                    result_text = f"Uncertain (Low Conf)"
+                    color = (0, 165, 255)  # Orange for uncertain
+                elif is_real:
+                    result_text = f"Real Face"
+                    color = (0, 255, 0)  # Green for real
+                else:
+                    result_text = f"Fake Face"
+                    color = (0, 0, 255)  # Red for fake
+                
+                # Create annotated image if requested
+                annotated_image_base64 = None
+                if include_annotated_image:
+                    annotated_frame = frame.copy()
+                    # Draw bounding box and result
+                    cv2.rectangle(
+                        annotated_frame,
+                        (image_bbox[0], image_bbox[1]),
+                        (image_bbox[0] + image_bbox[2], image_bbox[1] + image_bbox[3]),
+                        color, 2)
+                    cv2.putText(
+                        annotated_frame,
+                        f"{result_text}: {value:.2f}",
+                        (image_bbox[0], image_bbox[1] - 5),
+                        cv2.FONT_HERSHEY_COMPLEX, 0.5*frame.shape[0]/1024, color)
+                    
+                    # Encode annotated image to base64
+                    success, encoded_image = cv2.imencode('.jpg', annotated_frame)
+                    if success:
+                        annotated_image_base64 = base64.b64encode(encoded_image).decode('utf-8')
+                
+                # Calculate processing time
+                processing_time_ms = (time.time() - start_time) * 1000
+                
+                # Send results back to client
+                response = {
+                    "is_real": bool(is_real),
+                    "confidence": float(value),
+                    "result": "real" if is_real else "fake",
+                    "bbox": [int(x) for x in image_bbox],
+                    "processing_time_ms": float(processing_time_ms)
+                }
+                
+                if annotated_image_base64:
+                    response["annotated_image"] = annotated_image_base64
+                
+                await manager.send_json(websocket, response)
+                
+            except Exception as e:
+                await manager.send_json(websocket, {"error": str(e)})
+    
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        await manager.send_json(websocket, {"error": f"Unexpected error: {str(e)}"})
+        manager.disconnect(websocket)
+
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
