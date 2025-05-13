@@ -93,6 +93,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Create directory for static files if it doesn't exist
+os.makedirs(TEMP_DIR, exist_ok=True)
+
 # Mount static files directory for serving processed videos
 app.mount("/static", StaticFiles(directory=TEMP_DIR), name="static")
 
@@ -363,7 +366,19 @@ def encode_image_to_base64(image: np.ndarray) -> str:
     return base64.b64encode(encoded_image).decode('utf-8')
 
 # API Endpoints
-@app.get("/health", response_model=HealthResponse)
+@app.get("/", include_in_schema=False)
+async def root():
+    """Redirect to the API documentation."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
+
+@app.get("/client", include_in_schema=False)
+async def websocket_client():
+    """Serve the WebSocket client HTML file."""
+    from fastapi.responses import FileResponse
+    return FileResponse("websocket-client.html")
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Health check endpoint."""
     return {
