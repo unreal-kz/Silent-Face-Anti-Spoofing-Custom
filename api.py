@@ -402,9 +402,15 @@ def encode_image_to_base64(image: np.ndarray) -> str:
 # API Endpoints
 @app.get("/", include_in_schema=False)
 async def root():
-    """Redirect to the API documentation."""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/docs")
+    """Serve the WebSocket client HTML file."""
+    from fastapi.responses import FileResponse
+    return FileResponse("websocket-client.html")
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    """Custom handler for docs to ensure it works with our routing."""
+    from fastapi.openapi.docs import get_swagger_ui_html
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title)
 
 @app.get("/client", include_in_schema=False)
 async def websocket_client():
