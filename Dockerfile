@@ -7,7 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    wget \
     && rm -rf /var/lib/apt/lists/*
+    
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CUDA_VISIBLE_DEVICES="" \
+    FORCE_CPU=1
 
 # Copy requirements first to leverage Docker cache
 COPY requirements-api.txt .

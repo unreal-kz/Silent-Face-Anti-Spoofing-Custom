@@ -7,4 +7,14 @@ services:
       - "9001:9001"
     volumes:
       - ./temp_uploads:/app/temp_uploads
+      - ./resources:/app/resources
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FORCE_CPU=1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
