@@ -238,7 +238,9 @@
                 // Check if MediaDevices API is available
                 if (!navigator.mediaDevices) {
                     if (!isSecureContext()) {
-                        throw new Error('Camera access requires HTTPS. Please use a secure connection or localhost.');
+                        log('Camera access requires HTTPS. Enabling file upload mode instead.', true);
+                        enableFileUploadMode();
+                        return;
                     } else {
                         throw new Error('MediaDevices API not available in your browser.');
                     }
@@ -262,10 +264,65 @@
                     log('Camera started');
                 };
             } catch (err) {
-                log(`Error accessing camera: ${err.message}`, true);
+                log(`Error accessing camera: ${err.message}. Enabling file upload mode.`, true);
                 statusEl.innerHTML = `<span class="error">Camera Error: ${err.message}</span>`;
+                enableFileUploadMode();
             }
         });
+        
+        // Enable file upload mode as fallback when camera is not available
+        function enableFileUploadMode() {
+            // Hide video element and show file upload instead
+            video.style.display = 'none';
+            
+            // Create file upload element
+            const fileUploadDiv = document.createElement('div');
+            fileUploadDiv.innerHTML = `
+                <h3>File Upload Mode</h3>
+                <p>Camera access is not available. You can upload images for analysis instead.</p>
+                <input type="file" id="image-upload" accept="image/*">
+                <button id="upload-btn">Analyze Image</button>
+            `;
+            
+            // Insert before video
+            video.parentNode.insertBefore(fileUploadDiv, video);
+            
+            // Setup file upload handler
+            const imageUpload = document.getElementById('image-upload');
+            const uploadBtn = document.getElementById('upload-btn');
+            
+            uploadBtn.addEventListener('click', () => {
+                if (!imageUpload.files || !imageUpload.files[0]) {
+                    log('Please select an image file first', true);
+                    return;
+                }
+                
+                const file = imageUpload.files[0];
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    // Display the image
+                    const img = new Image();
+                    img.onload = function() {
+                        // Draw image to canvas
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx.drawImage(img, 0, 0);
+                        
+                        // Enable connection
+                        connectBtn.disabled = false;
+                        log('Image loaded successfully');
+                    };
+                    img.src = e.target.result;
+                };
+                
+                reader.readAsDataURL(file);
+            });
+            
+            // Update status
+            startBtn.disabled = true;
+            statusEl.innerHTML = '<span>File upload mode enabled</span>';
+        }
         
         // Connect to WebSocket
         connectBtn.addEventListener('click', () => {
