@@ -4,13 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "9001:9001"
+      - "9001:9001"  # HTTP port
+      - "9443:9443"  # HTTPS port (optional)
     volumes:
       - ./temp_uploads:/app/temp_uploads
       - ./resources:/app/resources
+      - ./ssl:/app/ssl  # Mount SSL certificates directory
     environment:
       - PYTHONUNBUFFERED=1
       - FORCE_CPU=1
+      # SSL certificate paths (comment out if not using HTTPS)
+      - SSL_KEYFILE=/app/ssl/key.pem
+      - SSL_CERTFILE=/app/ssl/cert.pem
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9001/health"]

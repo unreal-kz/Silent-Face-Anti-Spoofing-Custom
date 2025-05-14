@@ -225,9 +225,25 @@
             logEl.scrollTop = logEl.scrollHeight;
         }
         
+        // Check if we're on HTTPS
+        function isSecureContext() {
+            return window.location.protocol === 'https:' || 
+                   window.location.hostname === 'localhost' || 
+                   window.location.hostname === '127.0.0.1';
+        }
+
         // Start camera
         startBtn.addEventListener('click', async () => {
             try {
+                // Check if MediaDevices API is available
+                if (!navigator.mediaDevices) {
+                    if (!isSecureContext()) {
+                        throw new Error('Camera access requires HTTPS. Please use a secure connection or localhost.');
+                    } else {
+                        throw new Error('MediaDevices API not available in your browser.');
+                    }
+                }
+                
                 stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { 
                         width: { ideal: 640 },
@@ -247,6 +263,7 @@
                 };
             } catch (err) {
                 log(`Error accessing camera: ${err.message}`, true);
+                statusEl.innerHTML = `<span class="error">Camera Error: ${err.message}</span>`;
             }
         });
         

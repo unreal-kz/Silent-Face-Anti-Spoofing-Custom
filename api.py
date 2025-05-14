@@ -769,4 +769,22 @@ async def websocket_detect(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
+    # Check if SSL certificates exist for HTTPS
+    ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
+    ssl_certfile = os.environ.get('SSL_CERTFILE', None)
+    
+    # Use SSL if certificates are provided
+    if ssl_keyfile and ssl_certfile and os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+        print(f"\n*** STARTING SERVER WITH HTTPS SUPPORT ***")
+        uvicorn.run(
+            "api:app", 
+            host="0.0.0.0", 
+            port=9001, 
+            reload=True,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile
+        )
+    else:
+        print(f"\n*** STARTING SERVER WITH HTTP ONLY ***")
+        print(f"To enable HTTPS, set SSL_KEYFILE and SSL_CERTFILE environment variables")
+        uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
