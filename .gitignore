@@ -6,3 +6,4 @@ src/data_io/__pycache__/
 src/model_lib/__pycache__/
 docker-output-videos/
 temp_uploads/
+ssl/
