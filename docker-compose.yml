@@ -13,9 +13,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - FORCE_CPU=1
-      # SSL certificate paths (comment out if not using HTTPS)
-      - SSL_KEYFILE=/app/ssl/key.pem
-      - SSL_CERTFILE=/app/ssl/cert.pem
+      # SSL certificate paths (commented out for troubleshooting)
+      # - SSL_KEYFILE=/app/ssl/key.pem
+      # - SSL_CERTFILE=/app/ssl/cert.pem
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
