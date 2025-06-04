@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "9001:9001"  # HTTP port
-      - "9443:9443"  # HTTPS port (optional)
+      - "9443:9443"  # HTTPS port
     volumes:
       - ./temp_uploads:/app/temp_uploads
       - ./resources:/app/resources
@@ -13,9 +13,15 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - FORCE_CPU=1
-      # SSL certificate paths (commented out for troubleshooting)
-      # - SSL_KEYFILE=/app/ssl/key.pem
-      # - SSL_CERTFILE=/app/ssl/cert.pem
+      - SSL_KEYFILE=/app/ssl/key.pem
+      - SSL_CERTFILE=/app/ssl/cert.pem
+      - HOST=0.0.0.0
+      - HTTP_PORT=9001
+      - HTTPS_PORT=9443
+      - CONFIDENCE_THRESHOLD=0.65
+      - SMOOTHING_WINDOW=5
+      - MAX_FILE_SIZE=104857600
+      - ALLOWED_ORIGINS=["*"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9001/health"]

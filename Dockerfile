@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
     wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
     
 # Set environment variables
@@ -26,11 +27,11 @@ COPY websocket-client.html .
 COPY src/ ./src/
 COPY resources/ ./resources/
 
-# Create temp directory for file uploads
-RUN mkdir -p temp_uploads
+# Create necessary directories
+RUN mkdir -p temp_uploads ssl
 
-# Expose the port the app runs on
-EXPOSE 9001
+# Expose both HTTP and HTTPS ports
+EXPOSE 9001 9443
 
-# Command to run the application
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "9001"]
+# Command to run the application with SSL support
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "9001", "--ssl-keyfile", "/app/ssl/key.pem", "--ssl-certfile", "/app/ssl/cert.pem"]

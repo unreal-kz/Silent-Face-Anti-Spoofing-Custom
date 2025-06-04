@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Liveness Detection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .video-container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .video-box {
+            flex: 1;
+            min-width: 320px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        video, canvas {
+            width: 100%;
+            height: auto;
+            background-color: #f0f0f0;
+        }
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #f8f8f8;
+        }
+        .real {
+            color: green;
+            font-weight: bold;
+        }
+        .fake {
+            color: red;
+            font-weight: bold;
+        }
+        .uncertain {
+            color: orange;
+            font-weight: bold;
+        }
+        .settings {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .setting-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        label {
+            font-weight: bold;
+        }
+        input[type="range"] {
+            width: 200px;
+        }
+        .value-display {
+            font-size: 0.9em;
+            color: #666;
+        }
+        .log {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            background-color: #f9f9f9;
+            font-family: monospace;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Face Liveness Detection</h1>
+    <p>This demo connects to the WebSocket API for real-time liveness detection.</p>
+    
+    <div class="container">
+        <div class="settings">
+            <div class="setting-group">
+                <label for="confidence">Confidence Threshold:</label>
+                <input type="range" id="confidence" min="0.1" max="0.9" step="0.05" value="0.65">
+                <span class="value-display" id="confidence-value">0.65</span>
+            </div>
+            <div class="setting-group">
+                <label for="smoothing">Smoothing Window:</label>
+                <input type="range" id="smoothing" min="1" max="10" step="1" value="5">
+                <span class="value-display" id="smoothing-value">5</span>
+            </div>
+            <div class="setting-group">
+                <label for="fps">Processing FPS:</label>
+                <input type="range" id="fps" min="1" max="30" step="1" value="5">
+                <span class="value-display" id="fps-value">5</span>
+            </div>
+            <div class="setting-group">
+                <label for="annotate">Include Annotated Image:</label>
+                <input type="checkbox" id="annotate" checked>
+            </div>
+        </div>
+        
+        <div class="video-container">
+            <div class="video-box">
+                <h3>Camera Input</h3>
+                <video id="video" autoplay playsinline></video>
+                <canvas id="canvas" style="display:none;"></canvas>
+                <div class="controls">
+                    <button id="start-btn">Start Camera</button>
+                    <button id="connect-btn" disabled>Connect to WebSocket</button>
+                    <button id="stop-btn" disabled>Stop</button>
+                </div>
+                <div class="status" id="status">Status: Disconnected</div>
+            </div>
+            <div class="video-box">
+                <h3>Processed Output</h3>
+                <img id="output" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="width:100%; background-color:#f0f0f0;">
+                <div class="status" id="result">Result: N/A</div>
+                <div class="status">
+                    <div>Confidence: <span id="confidence-result">N/A</span></div>
+                    <div>Processing Time: <span id="processing-time">N/A</span> ms</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="log" id="log">
+            <div class="log-entry">System: Waiting to connect...</div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const output = document.getElementById('output');
+        const startBtn = document.getElementById('start-btn');
+        const connectBtn = document.getElementById('connect-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        const confidenceEl = document.getElementById('confidence-result');
+        const processingTimeEl = document.getElementById('processing-time');
+        const logEl = document.getElementById('log');
+        
+        // Settings elements
+        const confidenceInput = document.getElementById('confidence');
+        const confidenceValue = document.getElementById('confidence-value');
+        const smoothingInput = document.getElementById('smoothing');
+        const smoothingValue = document.getElementById('smoothing-value');
+        const fpsInput = document.getElementById('fps');
+        const fpsValue = document.getElementById('fps-value');
+        const annotateInput = document.getElementById('annotate');
+        
+        // Variables
+        let socket = null;
+        let stream = null;
+        let isConnected = false;
+        let processingInterval = null;
+        let lastFrameTime = 0;
+        
+        // Update settings display
+        confidenceInput.addEventListener('input', () => {
+            confidenceValue.textContent = confidenceInput.value;
+        });
+        
+        smoothingInput.addEventListener('input', () => {
+            smoothingValue.textContent = smoothingInput.value;
+        });
+        
+        fpsInput.addEventListener('input', () => {
+            fpsValue.textContent = fpsInput.value;
+            if (processingInterval) {
+                clearInterval(processingInterval);
+                startProcessing();
+            }
+        });
+        
+        // Log function
+        function log(message, isError = false) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry' + (isError ? ' error' : '');
+            entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        // Check if we're on HTTPS
+        function isSecureContext() {
+            return window.location.protocol === 'https:' || 
+                   window.location.hostname === 'localhost' || 
+                   window.location.hostname === '127.0.0.1';
+        }
+
+        // Start camera
+        startBtn.addEventListener('click', async () => {
+            try {
+                // Check if MediaDevices API is available
+                if (!navigator.mediaDevices) {
+                    if (!isSecureContext()) {
+                        throw new Error('Camera access requires HTTPS. Please use a secure connection or localhost.');
+                    } else {
+                        throw new Error('MediaDevices API not available in your browser.');
+                    }
+                }
+                
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    } 
+                });
+                video.srcObject = stream;
+                
+                // Set canvas size after video metadata is loaded
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    startBtn.disabled = true;
+                    connectBtn.disabled = false;
+                    log('Camera started');
+                };
+            } catch (err) {
+                log(`Error accessing camera: ${err.message}`, true);
+                statusEl.innerHTML = `<span class="error">Camera Error: ${err.message}</span>`;
+            }
+        });
+        
+        // Connect to WebSocket
+        connectBtn.addEventListener('click', () => {
+            // Use the correct WebSocket URL (using same protocol, host and port as the page)
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname || 'localhost';
+            // Use the same port as the page (we're behind Nginx now)
+            const port = window.location.port ? `:${window.location.port}` : '';
+            const wsUrl = `${wsProtocol}//${host}${port}/ws/detect`;
+            
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                socket.onopen = () => {
+                    isConnected = true;
+                    statusEl.textContent = 'Status: Connected';
+                    connectBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    log('WebSocket connected');
+                    startProcessing();
+                };
+                
+                socket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.error) {
+                        log(`Error from server: ${data.error}`, true);
+                        return;
+                    }
+                    
+                    // Update results
+                    const result = data.result;
+                    resultEl.textContent = `Result: ${result.charAt(0).toUpperCase() + result.slice(1)}`;
+                    resultEl.className = 'status ' + result;
+                    
+                    confidenceEl.textContent = data.confidence.toFixed(3);
+                    processingTimeEl.textContent = data.processing_time_ms.toFixed(1);
+                    
+                    // Display annotated image if available
+                    if (data.annotated_image) {
+                        output.src = 'data:image/jpeg;base64,' + data.annotated_image;
+                    }
+                };
+                
+                socket.onclose = () => {
+                    isConnected = false;
+                    statusEl.textContent = 'Status: Disconnected';
+                    connectBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    if (processingInterval) {
+                        clearInterval(processingInterval);
+                        processingInterval = null;
+        
+        const file = imageUpload.files[0];
+        const reader = new FileReader();
+        
+        reader.onload = function(e) {
+            // Display the image
+            const img = new Image();
+            img.onload = function() {
+                // Draw image to canvas
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+                
+                // Enable connection
+                connectBtn.disabled = false;
+                log('Image loaded successfully');
+            };
+            img.src = e.target.result;
+        };
+        
+        reader.readAsDataURL(file);
+    });
+    
+    // Update status
+    startBtn.disabled = true;
+    statusEl.innerHTML = '<span>File upload mode enabled</span>';
+}
+        
+// Connect to WebSocket
+connectBtn.addEventListener('click', () => {
+    // Use the correct WebSocket URL (using same protocol, host and port as the page)
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname || 'localhost';
+    // Use the same port as the page (we're behind Nginx now)
+    const port = window.location.port ? `:${window.location.port}` : '';
+    const wsUrl = `${wsProtocol}//${host}${port}/ws/detect`;
+    
+    try {
+        socket = new WebSocket(wsUrl);
+        
+        socket.onopen = () => {
+            isConnected = true;
+            statusEl.textContent = 'Status: Connected';
+            connectBtn.disabled = true;
+            stopBtn.disabled = false;
+            log('WebSocket connected');
+            startProcessing();
+        };
+        
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+        // Stop everything
+        stopBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.close();
+            }
+            
+            if (processingInterval) {
+                clearInterval(processingInterval);
+                processingInterval = null;
+            }
+            
+            isConnected = false;
+            statusEl.textContent = 'Status: Disconnected';
+            connectBtn.disabled = false;
+            stopBtn.disabled = true;
+            log('Stopped');
+        });
+        
+        // Process frames at specified FPS
+        function startProcessing() {
+            const interval = 1000 / parseInt(fpsInput.value);
+            processingInterval = setInterval(processFrame, interval);
+            log(`Processing started at ${fpsInput.value} FPS`);
+        }
+        
+        // Process a single frame
+        function processFrame() {
+            if (!isConnected || !socket || socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            // Draw video frame to canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Get image data as base64
+            const imageData = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            
+            // Send to server
+            socket.send(JSON.stringify({
+                image: imageData,
+                confidence_threshold: parseFloat(confidenceInput.value),
+                smoothing_window: parseInt(smoothingInput.value),
+                include_annotated_image: annotateInput.checked
+            }));
+        }
+    </script>
+</body>
+</html>

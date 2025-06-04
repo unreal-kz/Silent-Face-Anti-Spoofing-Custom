@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .log { margin: 10px 0; padding: 10px; background: #f0f0f0; height: 200px; overflow-y: auto; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Connection Test</h1>
+    <button id="connect">Connect WebSocket</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <div>
+        <strong>WebSocket URL:</strong> <span id="wsUrl"></span>
+    </div>
+    <div class="log" id="log"></div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const connectBtn = document.getElementById('connect');
+        const disconnectBtn = document.getElementById('disconnect');
+        const wsUrlEl = document.getElementById('wsUrl');
+        
+        let socket = null;
+        
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            entry.className = type;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        connectBtn.addEventListener('click', () => {
+            // Construct WebSocket URL from current page URL
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname || 'localhost';
+            const port = window.location.port ? `:${window.location.port}` : '';
+            const wsUrl = `${wsProtocol}//${host}${port}/ws/detect`;
+            
+            wsUrlEl.textContent = wsUrl;
+            log(`Connecting to ${wsUrl}...`);
+            
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                socket.onopen = () => {
+                    log('WebSocket connection established!', 'success');
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    
+                    // Send a simple ping message
+                    setTimeout(() => {
+                        try {
+                            socket.send(JSON.stringify({type: 'ping'}));
+                            log('Sent ping message');
+                        } catch (e) {
+                            log(`Error sending ping: ${e.message}`, 'error');
+                        }
+                    }, 1000);
+                };
+                
+                socket.onmessage = (event) => {
+                    log(`Received message: ${event.data}`, 'success');
+                };
+                
+                socket.onclose = (event) => {
+                    log(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason || 'None provided'}`, 
+                        event.wasClean ? 'info' : 'error');
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                };
+                
+                socket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    log('WebSocket error occurred. Check browser console for details.', 'error');
+                    // Additional debugging info
+                    log(`Navigator online: ${navigator.onLine}`, 'info');
+                    log(`Page protocol: ${window.location.protocol}`, 'info');
+                };
+            } catch (err) {
+                log(`Error creating WebSocket: ${err.message}`, 'error');
+            }
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.close();
+                log('Disconnected by user');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        });
+        
+        // Initial log
+        log('WebSocket test page loaded. Click "Connect" to test connection.');
+    </script>
+</body>
+</html>
