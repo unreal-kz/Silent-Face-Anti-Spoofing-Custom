@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-time Face Liveness Detection</title>
+    <title>Face Liveness Detection</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -25,6 +25,7 @@
             background-color: #000;
             border-radius: 8px;
             overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         #videoElement {
             width: 100%;
@@ -44,40 +45,53 @@
             margin-top: 10px;
         }
         button {
-            padding: 10px 20px;
+            padding: 12px 24px;
             font-size: 16px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
             background-color: #4CAF50;
             color: white;
-            transition: background-color 0.3s;
+            transition: all 0.3s;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
         button:hover {
             background-color: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
         button:disabled {
             background-color: #cccccc;
             cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
         }
         .status {
-            padding: 10px;
-            border-radius: 4px;
+            padding: 15px;
+            border-radius: 8px;
             margin-top: 10px;
             text-align: center;
             font-weight: bold;
+            font-size: 18px;
+            min-width: 200px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .real {
             background-color: #dff0d8;
             color: #3c763d;
+            border: 2px solid #3c763d;
         }
         .fake {
             background-color: #f2dede;
             color: #a94442;
+            border: 2px solid #a94442;
         }
         .uncertain {
             background-color: #fcf8e3;
             color: #8a6d3b;
+            border: 2px solid #8a6d3b;
         }
         .stats {
             display: flex;
@@ -86,25 +100,70 @@
         }
         .stat-item {
             text-align: center;
-            padding: 10px;
+            padding: 15px;
             background-color: white;
-            border-radius: 4px;
+            border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            min-width: 150px;
+        }
+        .stat-item div:first-child {
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-item div:last-child {
+            font-size: 18px;
+            color: #333;
+        }
+        .instructions {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-width: 640px;
+        }
+        .instructions h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        .instructions ol {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 10px 0;
+            color: #666;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Real-time Face Liveness Detection</h1>
+        <h1>Face Liveness Detection</h1>
+        
+        <div class="instructions">
+            <h2>Instructions:</h2>
+            <ol>
+                <li>Click "Start Camera" to begin the liveness detection</li>
+                <li>Position your face within the camera view</li>
+                <li>Keep your face steady and well-lit</li>
+                <li>The system will analyze your face in real-time</li>
+                <li>Results will show immediately below the video</li>
+            </ol>
+        </div>
+
         <div class="video-container">
             <video id="videoElement" autoplay playsinline></video>
             <canvas id="canvasElement"></canvas>
         </div>
+        
         <div class="controls">
             <button id="startButton">Start Camera</button>
             <button id="stopButton" disabled>Stop Camera</button>
         </div>
+        
         <div id="status" class="status"></div>
+        
         <div class="stats">
             <div class="stat-item">
                 <div>Confidence</div>
@@ -166,10 +225,10 @@
                 
                 // Update status
                 if (data.is_real) {
-                    statusDiv.textContent = 'Real Face';
+                    statusDiv.textContent = 'Real Face Detected';
                     statusDiv.className = 'status real';
                 } else {
-                    statusDiv.textContent = 'Fake Face';
+                    statusDiv.textContent = 'Fake Face Detected';
                     statusDiv.className = 'status fake';
                 }
                 
@@ -181,7 +240,7 @@
                 const bbox = data.bbox;
                 canvas.clearRect(0, 0, canvasElement.width, canvasElement.height);
                 canvas.strokeStyle = data.is_real ? '#00ff00' : '#ff0000';
-                canvas.lineWidth = 2;
+                canvas.lineWidth = 3;
                 canvas.strokeRect(bbox[0], bbox[1], bbox[2], bbox[3]);
             };
         }
@@ -202,7 +261,7 @@
                 connectWebSocket();
             } catch (error) {
                 console.error('Error accessing camera:', error);
-                statusDiv.textContent = 'Error accessing camera';
+                statusDiv.textContent = 'Error: Could not access camera';
                 statusDiv.className = 'status uncertain';
             }
         }

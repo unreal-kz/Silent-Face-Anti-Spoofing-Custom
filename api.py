@@ -484,8 +484,8 @@ def detect_from_webcam(frame, device_id=DEVICE_ID, confidence_threshold=CONFIDEN
 # API Endpoints
 @app.get("/", include_in_schema=False)
 async def root():
-    """Redirect to the API documentation."""
-    return RedirectResponse(url="/docs")
+    """Serve the webcam client interface."""
+    return FileResponse("static/webcam-client.html")
 
 @app.get("/docs", include_in_schema=False)
 async def docs_redirect():
@@ -496,11 +496,6 @@ async def docs_redirect():
 async def websocket_client():
     """Serve the WebSocket client HTML file."""
     return FileResponse("static/websocket-client.html")
-
-@app.get("/webcam", include_in_schema=False)
-async def webcam_client():
-    """Serve the webcam client HTML file."""
-    return FileResponse("static/webcam-client.html")
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
