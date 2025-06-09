@@ -8,12 +8,9 @@ import uuid
 import json
 import numpy as np
 import torch
-import torch
 import uvicorn
 from typing import Optional, Dict, List, Any
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketDisconnect as StarletteWebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.websockets import WebSocketDisconnect as StarletteWebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,33 +54,8 @@ if torch.cuda.is_available():
         USE_GPU = False
         DEVICE_ID = -1
 
-# Check if CUDA is available and working
-USE_GPU = False  # Default to CPU for safety
-DEVICE_ID = -1    # Default to CPU
-
-# Try to initialize CUDA only if available
-if torch.cuda.is_available():
-    try:
-        # Test CUDA with a small tensor operation
-        test_tensor = torch.zeros(1).cuda()
-        test_tensor = test_tensor + 1
-        test_tensor.cpu()  # Move back to CPU
-        
-        # If we get here, CUDA is working
-        USE_GPU = True
-        DEVICE_ID = 0
-        print("\n*** GPU TEST SUCCESSFUL ***")
-    except Exception as e:
-        print(f"\n*** GPU TEST FAILED: {str(e)} ***")
-        print("Falling back to CPU mode")
-        USE_GPU = False
-        DEVICE_ID = -1
-
 # Create temp directory if it doesn't exist
 os.makedirs(TEMP_DIR, exist_ok=True)
-
-# Create directories if they don't exist
-os.makedirs("static", exist_ok=True)
 
 # Create directories if they don't exist
 os.makedirs("static", exist_ok=True)
@@ -113,6 +85,14 @@ class VideoDetectionResponse(BaseModel):
     output_video_path: Optional[str] = None
     processing_time_ms: float
     video_info: Dict
+
+# Add new Pydantic model for webcam response
+class WebcamDetectionResponse(BaseModel):
+    is_real: bool
+    confidence: float
+    bbox: List[int]
+    frame_base64: str
+    processing_time_ms: float
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -148,27 +128,6 @@ else:
     print("\n*** RUNNING ON CPU ***")
     print("GPU acceleration not available. Install CUDA for better performance.")
 
-# Create directories if they don't exist
-os.makedirs(TEMP_DIR, exist_ok=True)
-os.makedirs("static", exist_ok=True)
-
-# Mount static files directories
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory=TEMP_DIR), name="uploads")
-
-# Log GPU status
-if USE_GPU:
-    print(f"\n*** GPU ACCELERATION ENABLED ***")
-    print(f"CUDA Device: {torch.cuda.get_device_name(DEVICE_ID)}")
-    print(f"CUDA Memory: {torch.cuda.get_device_properties(DEVICE_ID).total_memory / 1024**3:.2f} GB")
-else:
-    print("\n*** RUNNING ON CPU ***")
-    print("GPU acceleration not available. Install CUDA for better performance.")
-
-# Create directories if they don't exist
-os.makedirs(TEMP_DIR, exist_ok=True)
-os.makedirs("static", exist_ok=True)
-
 # Mount static files directories
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=TEMP_DIR), name="uploads")
@@ -183,7 +142,6 @@ app.add_middleware(
 )
 
 # Utility functions - adapted from test_video.py
-def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
 def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
     """Detect liveness from a single image."""
     model_test = AntiSpoofPredict(device_id)
@@ -254,7 +212,6 @@ def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENC
         "annotated_image": annotated_image
     }
 
-def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
 def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
                      smoothing_window=SMOOTHING_WINDOW, output_path=None):
     """Detect liveness from a video file - directly adapted from test_video.py."""
@@ -415,13 +372,10 @@ async def save_upload_file_temp(upload_file: UploadFile) -> str:
 
 def cleanup_temp_file(file_path: str) -> None:
     """Clean up temporary files with proper error handling."""
-    """Clean up temporary files with proper error handling."""
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
     except Exception as e:
-        print(f"Warning: Failed to clean up temporary file {file_path}: {str(e)}")
-        # Don't raise the exception as this is a cleanup operation
         print(f"Warning: Failed to clean up temporary file {file_path}: {str(e)}")
         # Don't raise the exception as this is a cleanup operation
 
@@ -454,24 +408,99 @@ def encode_image_to_base64(image: np.ndarray) -> str:
         raise ValueError("Could not encode image")
     return base64.b64encode(encoded_image).decode('utf-8')
 
+# Add new function for real-time webcam detection
+def detect_from_webcam(frame, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
+    """Detect liveness from a webcam frame in real-time."""
+    model_test = AntiSpoofPredict(device_id)
+    image_cropper = CropImage()
+    
+    # Get face bounding box
+    image_bbox = model_test.get_bbox(frame)
+    if image_bbox is None:
+        return None
+    
+    # Initialize prediction array
+    prediction = np.zeros((1, 3))
+    
+    # Process with all models in the model directory
+    for model_name in os.listdir(MODEL_DIR):
+        h_input, w_input, model_type, scale = parse_model_name(model_name)
+        param = {
+            "org_img": frame,
+            "bbox": image_bbox,
+            "scale": scale,
+            "out_w": w_input,
+            "out_h": h_input,
+            "crop": True,
+        }
+        if scale is None:
+            param["crop"] = False
+        img = image_cropper.crop(**param)
+        prediction += model_test.predict(img, os.path.join(MODEL_DIR, model_name))
+    
+    # Determine if real or fake face with confidence threshold
+    label = np.argmax(prediction)
+    value = prediction[0][label]/2
+    
+    # Apply confidence threshold (label 1 is real, label 0 is fake)
+    is_real = label == 1
+    if is_real and value < confidence_threshold:
+        # If classified as real but confidence is low, mark as uncertain/fake
+        is_real = False
+        label = 0
+        result_text = f"Uncertain (Low Confidence)"
+    elif is_real:
+        result_text = "Real Face"
+    else:
+        result_text = "Fake Face"
+    
+    # Create annotated image
+    annotated_image = frame.copy()
+    if is_real:
+        color = (0, 255, 0)  # Green for real
+    else:
+        color = (0, 0, 255)  # Red for fake
+    
+    # Draw bounding box and result
+    cv2.rectangle(
+        annotated_image,
+        (image_bbox[0], image_bbox[1]),
+        (image_bbox[0] + image_bbox[2], image_bbox[1] + image_bbox[3]),
+        color, 2)
+    cv2.putText(
+        annotated_image,
+        f"{result_text}: {value:.2f}",
+        (image_bbox[0], image_bbox[1] - 5),
+        cv2.FONT_HERSHEY_COMPLEX, 0.5*frame.shape[0]/1024, color)
+    
+    return {
+        "is_real": bool(is_real),
+        "confidence": float(value),
+        "label": int(label),
+        "bbox": [int(x) for x in image_bbox],
+        "annotated_image": annotated_image
+    }
+
 # API Endpoints
 @app.get("/", include_in_schema=False)
 async def root():
-    return FileResponse("static/index.html")
+    """Redirect to the API documentation."""
+    return RedirectResponse(url="/docs")
 
 @app.get("/docs", include_in_schema=False)
 async def docs_redirect():
-    return FileResponse("static/index.html")
-
-@app.get("/docs", include_in_schema=False)
-async def docs_redirect():
+    """Redirect to the API documentation."""
     return RedirectResponse(url="/docs")
 
 @app.get("/client", include_in_schema=False)
 async def websocket_client():
     """Serve the WebSocket client HTML file."""
     return FileResponse("static/websocket-client.html")
-    return FileResponse("static/websocket-client.html")
+
+@app.get("/webcam", include_in_schema=False)
+async def webcam_client():
+    """Serve the webcam client HTML file."""
+    return FileResponse("static/webcam-client.html")
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
@@ -607,7 +636,6 @@ async def detect_video(
             # Convert to relative URL for static file serving
             output_filename = os.path.basename(output_path)
             response["output_video_path"] = f"/uploads/{output_filename}"
-            response["output_video_path"] = f"/uploads/{output_filename}"
         
         return response
     
@@ -629,6 +657,50 @@ async def download_file(filename: str):
         filename=filename,
         media_type="application/octet-stream"
     )
+
+@app.post("/detect/webcam", response_model=WebcamDetectionResponse)
+async def detect_webcam(
+    file: UploadFile = File(...),
+    confidence_threshold: Optional[float] = CONFIDENCE_THRESHOLD
+):
+    """Process a single frame from webcam for liveness detection."""
+    start_time = time.time()
+    
+    # Validate file type
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed types: {', '.join(ALLOWED_IMAGE_TYPES)}"
+        )
+    
+    # Read and decode the image
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+    
+    # Process the frame
+    result = detect_from_webcam(frame, confidence_threshold=confidence_threshold)
+    
+    if result is None:
+        raise HTTPException(status_code=400, detail="No face detected in the frame")
+    
+    # Calculate processing time
+    processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+    
+    # Encode the annotated image to base64
+    _, buffer = cv2.imencode('.jpg', result['annotated_image'])
+    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+    
+    return {
+        "is_real": result["is_real"],
+        "confidence": result["confidence"],
+        "bbox": result["bbox"],
+        "frame_base64": frame_base64,
+        "processing_time_ms": processing_time
+    }
 
 @app.websocket("/ws/detect")
 async def websocket_detect(websocket: WebSocket):
@@ -727,27 +799,57 @@ async def websocket_detect(websocket: WebSocket):
             pass
         manager.disconnect(websocket)
 
+# Add WebSocket endpoint for real-time webcam streaming
+@app.websocket("/ws/webcam")
+async def websocket_webcam(websocket: WebSocket):
+    """WebSocket endpoint for real-time webcam streaming and detection."""
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Receive base64 encoded frame
+            data = await websocket.receive_text()
+            try:
+                # Decode base64 image
+                img_data = base64.b64decode(data.split(',')[1] if ',' in data else data)
+                nparr = np.frombuffer(img_data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if frame is None:
+                    await websocket.send_json({"error": "Could not decode image"})
+                    continue
+                
+                # Process frame
+                start_time = time.time()
+                result = detect_from_webcam(frame)
+                processing_time = (time.time() - start_time) * 1000
+                
+                if result is None:
+                    await websocket.send_json({"error": "No face detected"})
+                    continue
+                
+                # Encode the annotated image
+                _, buffer = cv2.imencode('.jpg', result['annotated_image'])
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                # Send results
+                await websocket.send_json({
+                    "is_real": result["is_real"],
+                    "confidence": result["confidence"],
+                    "bbox": result["bbox"],
+                    "frame_base64": frame_base64,
+                    "processing_time_ms": processing_time
+                })
+                
+            except Exception as e:
+                await websocket.send_json({"error": str(e)})
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+        manager.disconnect(websocket)
 
 if __name__ == "__main__":
-    # Check if SSL certificates exist for HTTPS
-    ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
-    ssl_certfile = os.environ.get('SSL_CERTFILE', None)
-    
-    # Use SSL if certificates are provided
-    if ssl_keyfile and ssl_certfile and os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
-        print(f"\n*** STARTING SERVER WITH HTTPS SUPPORT ***")
-        uvicorn.run(
-            "api:app", 
-            host="0.0.0.0", 
-            port=9001, 
-            reload=True,
-            ssl_keyfile=ssl_keyfile,
-            ssl_certfile=ssl_certfile
-        )
-    else:
-        print(f"\n*** STARTING SERVER WITH HTTP ONLY ***")
-        print(f"To enable HTTPS, set SSL_KEYFILE and SSL_CERTFILE environment variables")
-        uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
     # Check if SSL certificates exist for HTTPS
     ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
     ssl_certfile = os.environ.get('SSL_CERTFILE', None)
