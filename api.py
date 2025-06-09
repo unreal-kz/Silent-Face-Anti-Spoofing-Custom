@@ -8,9 +8,12 @@ import uuid
 import json
 import numpy as np
 import torch
+import torch
 import uvicorn
 from typing import Optional, Dict, List, Any
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect as StarletteWebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.websockets import WebSocketDisconnect as StarletteWebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,8 +57,33 @@ if torch.cuda.is_available():
         USE_GPU = False
         DEVICE_ID = -1
 
+# Check if CUDA is available and working
+USE_GPU = False  # Default to CPU for safety
+DEVICE_ID = -1    # Default to CPU
+
+# Try to initialize CUDA only if available
+if torch.cuda.is_available():
+    try:
+        # Test CUDA with a small tensor operation
+        test_tensor = torch.zeros(1).cuda()
+        test_tensor = test_tensor + 1
+        test_tensor.cpu()  # Move back to CPU
+        
+        # If we get here, CUDA is working
+        USE_GPU = True
+        DEVICE_ID = 0
+        print("\n*** GPU TEST SUCCESSFUL ***")
+    except Exception as e:
+        print(f"\n*** GPU TEST FAILED: {str(e)} ***")
+        print("Falling back to CPU mode")
+        USE_GPU = False
+        DEVICE_ID = -1
+
 # Create temp directory if it doesn't exist
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Create directories if they don't exist
+os.makedirs("static", exist_ok=True)
 
 # Create directories if they don't exist
 os.makedirs("static", exist_ok=True)
@@ -128,6 +156,23 @@ os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/uploads", StaticFiles(directory=TEMP_DIR), name="uploads")
 
+# Log GPU status
+if USE_GPU:
+    print(f"\n*** GPU ACCELERATION ENABLED ***")
+    print(f"CUDA Device: {torch.cuda.get_device_name(DEVICE_ID)}")
+    print(f"CUDA Memory: {torch.cuda.get_device_properties(DEVICE_ID).total_memory / 1024**3:.2f} GB")
+else:
+    print("\n*** RUNNING ON CPU ***")
+    print("GPU acceleration not available. Install CUDA for better performance.")
+
+# Create directories if they don't exist
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs("static", exist_ok=True)
+
+# Mount static files directories
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/uploads", StaticFiles(directory=TEMP_DIR), name="uploads")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -138,6 +183,7 @@ app.add_middleware(
 )
 
 # Utility functions - adapted from test_video.py
+def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
 def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
     """Detect liveness from a single image."""
     model_test = AntiSpoofPredict(device_id)
@@ -208,6 +254,7 @@ def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENC
         "annotated_image": annotated_image
     }
 
+def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
 def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
                      smoothing_window=SMOOTHING_WINDOW, output_path=None):
     """Detect liveness from a video file - directly adapted from test_video.py."""
@@ -368,10 +415,13 @@ async def save_upload_file_temp(upload_file: UploadFile) -> str:
 
 def cleanup_temp_file(file_path: str) -> None:
     """Clean up temporary files with proper error handling."""
+    """Clean up temporary files with proper error handling."""
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
     except Exception as e:
+        print(f"Warning: Failed to clean up temporary file {file_path}: {str(e)}")
+        # Don't raise the exception as this is a cleanup operation
         print(f"Warning: Failed to clean up temporary file {file_path}: {str(e)}")
         # Don't raise the exception as this is a cleanup operation
 
@@ -411,11 +461,16 @@ async def root():
 
 @app.get("/docs", include_in_schema=False)
 async def docs_redirect():
+    return FileResponse("static/index.html")
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
     return RedirectResponse(url="/docs")
 
 @app.get("/client", include_in_schema=False)
 async def websocket_client():
     """Serve the WebSocket client HTML file."""
+    return FileResponse("static/websocket-client.html")
     return FileResponse("static/websocket-client.html")
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -552,6 +607,7 @@ async def detect_video(
             # Convert to relative URL for static file serving
             output_filename = os.path.basename(output_path)
             response["output_video_path"] = f"/uploads/{output_filename}"
+            response["output_video_path"] = f"/uploads/{output_filename}"
         
         return response
     
@@ -673,6 +729,25 @@ async def websocket_detect(websocket: WebSocket):
 
 
 if __name__ == "__main__":
+    # Check if SSL certificates exist for HTTPS
+    ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
+    ssl_certfile = os.environ.get('SSL_CERTFILE', None)
+    
+    # Use SSL if certificates are provided
+    if ssl_keyfile and ssl_certfile and os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+        print(f"\n*** STARTING SERVER WITH HTTPS SUPPORT ***")
+        uvicorn.run(
+            "api:app", 
+            host="0.0.0.0", 
+            port=9001, 
+            reload=True,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile
+        )
+    else:
+        print(f"\n*** STARTING SERVER WITH HTTP ONLY ***")
+        print(f"To enable HTTPS, set SSL_KEYFILE and SSL_CERTFILE environment variables")
+        uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
     # Check if SSL certificates exist for HTTPS
     ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
     ssl_certfile = os.environ.get('SSL_CERTFILE', None)
