@@ -7,10 +7,12 @@ import time
 import uuid
 import json
 import numpy as np
+import torch
 import uvicorn
 from typing import Optional, Dict, List, Any
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from starlette.websockets import WebSocketDisconnect as StarletteWebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,8 +32,33 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/jpg"]
 ALLOWED_VIDEO_TYPES = ["video/mp4", "video/avi", "video/x-msvideo", "video/quicktime"]
 
+# Check if CUDA is available and working
+USE_GPU = False  # Default to CPU for safety
+DEVICE_ID = -1    # Default to CPU
+
+# Try to initialize CUDA only if available
+if torch.cuda.is_available():
+    try:
+        # Test CUDA with a small tensor operation
+        test_tensor = torch.zeros(1).cuda()
+        test_tensor = test_tensor + 1
+        test_tensor.cpu()  # Move back to CPU
+        
+        # If we get here, CUDA is working
+        USE_GPU = True
+        DEVICE_ID = 0
+        print("\n*** GPU TEST SUCCESSFUL ***")
+    except Exception as e:
+        print(f"\n*** GPU TEST FAILED: {str(e)} ***")
+        print("Falling back to CPU mode")
+        USE_GPU = False
+        DEVICE_ID = -1
+
 # Create temp directory if it doesn't exist
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Create directories if they don't exist
+os.makedirs("static", exist_ok=True)
 
 # Pydantic models for API responses
 class HealthResponse(BaseModel):
@@ -84,6 +111,23 @@ app = FastAPI(
 # Create connection manager instance
 manager = ConnectionManager()
 
+# Log GPU status
+if USE_GPU:
+    print(f"\n*** GPU ACCELERATION ENABLED ***")
+    print(f"CUDA Device: {torch.cuda.get_device_name(DEVICE_ID)}")
+    print(f"CUDA Memory: {torch.cuda.get_device_properties(DEVICE_ID).total_memory / 1024**3:.2f} GB")
+else:
+    print("\n*** RUNNING ON CPU ***")
+    print("GPU acceleration not available. Install CUDA for better performance.")
+
+# Create directories if they don't exist
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs("static", exist_ok=True)
+
+# Mount static files directories
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/uploads", StaticFiles(directory=TEMP_DIR), name="uploads")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -93,14 +137,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create directory for static files if it doesn't exist
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-# Mount static files directory for serving processed videos
-app.mount("/static", StaticFiles(directory=TEMP_DIR), name="static")
-
 # Utility functions - adapted from test_video.py
-def detect_from_image(image, device_id=-1, confidence_threshold=CONFIDENCE_THRESHOLD):
+def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
     """Detect liveness from a single image."""
     model_test = AntiSpoofPredict(device_id)
     image_cropper = CropImage()
@@ -170,7 +208,7 @@ def detect_from_image(image, device_id=-1, confidence_threshold=CONFIDENCE_THRES
         "annotated_image": annotated_image
     }
 
-def detect_from_video(video_path, device_id=-1, confidence_threshold=CONFIDENCE_THRESHOLD, 
+def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
                      smoothing_window=SMOOTHING_WINDOW, output_path=None):
     """Detect liveness from a video file - directly adapted from test_video.py."""
     model_test = AntiSpoofPredict(device_id)
@@ -329,12 +367,13 @@ async def save_upload_file_temp(upload_file: UploadFile) -> str:
     return temp_path
 
 def cleanup_temp_file(file_path: str) -> None:
-    """Remove a temporary file."""
+    """Clean up temporary files with proper error handling."""
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
     except Exception as e:
-        print(f"Error removing temporary file {file_path}: {e}")
+        print(f"Warning: Failed to clean up temporary file {file_path}: {str(e)}")
+        # Don't raise the exception as this is a cleanup operation
 
 def get_video_info(video_path: str) -> dict:
     """Get information about a video file."""
@@ -368,15 +407,16 @@ def encode_image_to_base64(image: np.ndarray) -> str:
 # API Endpoints
 @app.get("/", include_in_schema=False)
 async def root():
-    """Redirect to the API documentation."""
-    from fastapi.responses import RedirectResponse
+    return FileResponse("static/index.html")
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
     return RedirectResponse(url="/docs")
 
 @app.get("/client", include_in_schema=False)
 async def websocket_client():
     """Serve the WebSocket client HTML file."""
-    from fastapi.responses import FileResponse
-    return FileResponse("websocket-client.html")
+    return FileResponse("static/websocket-client.html")
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
@@ -511,7 +551,7 @@ async def detect_video(
         if save_annotated_video and output_path:
             # Convert to relative URL for static file serving
             output_filename = os.path.basename(output_path)
-            response["output_video_path"] = f"/static/{output_filename}"
+            response["output_video_path"] = f"/uploads/{output_filename}"
         
         return response
     
@@ -536,143 +576,119 @@ async def download_file(filename: str):
 
 @app.websocket("/ws/detect")
 async def websocket_detect(websocket: WebSocket):
-    """WebSocket endpoint for real-time liveness detection.
-    
-    Clients should send base64-encoded image frames and will receive liveness detection results.
-    """
-    # Initialize detector
-    model_test = AntiSpoofPredict(-1)  # Use CPU for inference
-    image_cropper = CropImage()
-    
-    # For temporal smoothing
-    recent_predictions = []
-    
-    await manager.connect(websocket)
     try:
+        await manager.connect(websocket)
+        print(f"WebSocket client connected from {websocket.client.host}:{websocket.client.port}")
+        
         while True:
-            # Receive message from client
-            data = await websocket.receive_json()
-            
-            # Extract parameters
-            confidence_threshold = data.get("confidence_threshold", CONFIDENCE_THRESHOLD)
-            smoothing_window = data.get("smoothing_window", SMOOTHING_WINDOW)
-            include_annotated_image = data.get("include_annotated_image", False)
-            
-            # Decode base64 image
             try:
-                image_data = base64.b64decode(data["image"])
-                nparr = np.frombuffer(image_data, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if frame is None:
-                    await manager.send_json(websocket, {"error": "Invalid image data"})
-                    continue
-            except Exception as e:
-                await manager.send_json(websocket, {"error": f"Error decoding image: {str(e)}"})
-                continue
-            
-            # Start timing
-            start_time = time.time()
-            
-            try:
-                # Get face bounding box
-                image_bbox = model_test.get_bbox(frame)
-                
-                # Initialize prediction array
-                prediction = np.zeros((1, 3))
-                
-                # Process with all models in the model directory
-                for model_name in os.listdir(MODEL_DIR):
-                    h_input, w_input, model_type, scale = parse_model_name(model_name)
-                    param = {
-                        "org_img": frame,
-                        "bbox": image_bbox,
-                        "scale": scale,
-                        "out_w": w_input,
-                        "out_h": h_input,
-                        "crop": True,
-                    }
-                    if scale is None:
-                        param["crop"] = False
-                    img = image_cropper.crop(**param)
-                    prediction += model_test.predict(img, os.path.join(MODEL_DIR, model_name))
-                
-                # Store the raw prediction for temporal smoothing
-                recent_predictions.append(prediction)
-                if len(recent_predictions) > smoothing_window:
-                    recent_predictions.pop(0)  # Remove oldest prediction
-                
-                # Apply temporal smoothing by averaging recent predictions
-                if len(recent_predictions) > 0:
-                    smoothed_prediction = np.mean(recent_predictions, axis=0)
-                else:
-                    smoothed_prediction = prediction
-                
-                # Determine if real or fake face with confidence threshold
-                label = np.argmax(smoothed_prediction)
-                value = smoothed_prediction[0][label]/2
-                
-                # Apply confidence threshold (label 1 is real, label 0 is fake)
-                is_real = label == 1
-                if is_real and value < confidence_threshold:
-                    # If classified as real but confidence is low, mark as uncertain/fake
-                    is_real = False
-                    label = 0
-                    result_text = f"Uncertain (Low Conf)"
-                    color = (0, 165, 255)  # Orange for uncertain
-                elif is_real:
-                    result_text = f"Real Face"
-                    color = (0, 255, 0)  # Green for real
-                else:
-                    result_text = f"Fake Face"
-                    color = (0, 0, 255)  # Red for fake
-                
-                # Create annotated image if requested
-                annotated_image_base64 = None
-                if include_annotated_image:
-                    annotated_frame = frame.copy()
-                    # Draw bounding box and result
-                    cv2.rectangle(
-                        annotated_frame,
-                        (image_bbox[0], image_bbox[1]),
-                        (image_bbox[0] + image_bbox[2], image_bbox[1] + image_bbox[3]),
-                        color, 2)
-                    cv2.putText(
-                        annotated_frame,
-                        f"{result_text}: {value:.2f}",
-                        (image_bbox[0], image_bbox[1] - 5),
-                        cv2.FONT_HERSHEY_COMPLEX, 0.5*frame.shape[0]/1024, color)
+                # Receive the image data
+                data = await websocket.receive_text()
+                try:
+                    image_data = json.loads(data)
+                    if "image" not in image_data:
+                        print("No image data found in request")
+                        await manager.send_json(websocket, {
+                            "error": "No image data found in request"
+                        })
+                        continue
                     
-                    # Encode annotated image to base64
-                    success, encoded_image = cv2.imencode('.jpg', annotated_frame)
-                    if success:
-                        annotated_image_base64 = base64.b64encode(encoded_image).decode('utf-8')
-                
-                # Calculate processing time
-                processing_time_ms = (time.time() - start_time) * 1000
-                
-                # Send results back to client
-                response = {
-                    "is_real": bool(is_real),
-                    "confidence": float(value),
-                    "result": "real" if is_real else "fake",
-                    "bbox": [int(x) for x in image_bbox],
-                    "processing_time_ms": float(processing_time_ms)
-                }
-                
-                if annotated_image_base64:
-                    response["annotated_image"] = annotated_image_base64
-                
-                await manager.send_json(websocket, response)
-                
+                    # Decode base64 image
+                    try:
+                        image_str = image_data["image"]
+                        if "," in image_str:
+                            # Data URL format (e.g., "data:image/jpeg;base64,/9j/4AAQ...")
+                            image_bytes = base64.b64decode(image_str.split(",")[1])
+                        else:
+                            # Raw base64 format
+                            image_bytes = base64.b64decode(image_str)
+                            
+                        nparr = np.frombuffer(image_bytes, np.uint8)
+                        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if image is None:
+                            raise ValueError("Could not decode image data")
+                            
+                    except Exception as e:
+                        print(f"Image decoding error: {str(e)}")
+                        await manager.send_json(websocket, {
+                            "error": f"Failed to decode image: {str(e)}"
+                        })
+                        continue
+
+                    # Process the image
+                    try:
+                        start_time = time.time()
+                        result = detect_from_image(image)
+                        processing_time_ms = (time.time() - start_time) * 1000
+                        
+                        # Convert numpy array to base64 for JSON serialization
+                        if "annotated_image" in result:
+                            result["annotated_image_base64"] = encode_image_to_base64(result["annotated_image"])
+                            del result["annotated_image"]  # Remove the numpy array
+                        
+                        # Add processing time
+                        result["processing_time_ms"] = processing_time_ms
+                        
+                        await manager.send_json(websocket, result)
+                    except Exception as e:
+                        print(f"Image processing error: {str(e)}")
+                        await manager.send_json(websocket, {
+                            "error": f"Failed to process image: {str(e)}"
+                        })
+                        continue
+
+                except json.JSONDecodeError as e:
+                    print(f"JSON decode error: {str(e)}")
+                    await manager.send_json(websocket, {
+                        "error": "Invalid JSON data received"
+                    })
+                    continue
+                except Exception as e:
+                    print(f"Unexpected error: {str(e)}")
+                    await manager.send_json(websocket, {
+                        "error": f"Unexpected error: {str(e)}"
+                    })
+                    continue
+
+            except WebSocketDisconnect:
+                print(f"WebSocket client disconnected from {websocket.client.host}:{websocket.client.port}")
+                manager.disconnect(websocket)
+                break
             except Exception as e:
-                await manager.send_json(websocket, {"error": str(e)})
-    
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+                print(f"WebSocket error: {str(e)}")
+                await manager.send_json(websocket, {
+                    "error": f"WebSocket error: {str(e)}"
+                })
+                break
+
     except Exception as e:
-        await manager.send_json(websocket, {"error": f"Unexpected error: {str(e)}"})
+        print(f"Connection error: {str(e)}")
+        try:
+            await manager.send_json(websocket, {
+                "error": f"Connection error: {str(e)}"
+            })
+        except:
+            pass
         manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
+    # Check if SSL certificates exist for HTTPS
+    ssl_keyfile = os.environ.get('SSL_KEYFILE', None)
+    ssl_certfile = os.environ.get('SSL_CERTFILE', None)
+    
+    # Use SSL if certificates are provided
+    if ssl_keyfile and ssl_certfile and os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+        print(f"\n*** STARTING SERVER WITH HTTPS SUPPORT ***")
+        uvicorn.run(
+            "api:app", 
+            host="0.0.0.0", 
+            port=9001, 
+            reload=True,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile
+        )
+    else:
+        print(f"\n*** STARTING SERVER WITH HTTP ONLY ***")
+        print(f"To enable HTTPS, set SSL_KEYFILE and SSL_CERTFILE environment variables")
+        uvicorn.run("api:app", host="0.0.0.0", port=9001, reload=True)
