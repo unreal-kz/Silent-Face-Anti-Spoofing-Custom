@@ -822,16 +822,11 @@ async def websocket_webcam(websocket: WebSocket):
                     await websocket.send_json({"error": "No face detected"})
                     continue
                 
-                # Encode the annotated image
-                _, buffer = cv2.imencode('.jpg', result['annotated_image'])
-                frame_base64 = base64.b64encode(buffer).decode('utf-8')
-                
                 # Send results
                 await websocket.send_json({
                     "is_real": result["is_real"],
                     "confidence": result["confidence"],
                     "bbox": result["bbox"],
-                    "frame_base64": frame_base64,
                     "processing_time_ms": processing_time
                 })
                 
