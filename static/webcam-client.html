@@ -191,13 +191,15 @@
         let ws = null;
         let isProcessing = false;
         let lastFrameTime = 0;
-        const targetFPS = 30; // Target frames per second
-        const frameInterval = 1000 / targetFPS; // Time between frames in ms
+        const targetFPS = 30;
+        const frameInterval = 1000 / targetFPS;
+        let frameCount = 0;
+        const skipFrames = 2; // Process every 3rd frame
         
         // Initialize canvas
-        const canvas = canvasElement.getContext('2d');
+        const canvas = canvasElement.getContext('2d', { alpha: false });
         
-        // WebSocket connection
+        // WebSocket connection with binary transfer
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/webcam`;
@@ -259,7 +261,7 @@
             };
         }
         
-        // Start camera
+        // Start camera with optimized settings
         async function startCamera() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({
@@ -267,7 +269,8 @@
                         width: 640,
                         height: 480,
                         facingMode: 'user',
-                        frameRate: { ideal: 30 }
+                        frameRate: { ideal: 30, max: 30 },
+                        aspectRatio: 1.333333
                     }
                 });
                 videoElement.srcObject = stream;
@@ -306,6 +309,7 @@
         function startProcessing() {
             isProcessing = true;
             lastFrameTime = performance.now();
+            frameCount = 0;
             processFrame();
         }
         
@@ -314,7 +318,7 @@
             isProcessing = false;
         }
         
-        // Process each frame
+        // Process each frame with optimization
         function processFrame() {
             if (!isProcessing) return;
             
@@ -322,15 +326,23 @@
             const elapsed = currentTime - lastFrameTime;
             
             if (elapsed >= frameInterval) {
-                // Draw video frame to canvas
-                canvas.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                frameCount++;
                 
-                // Convert canvas to base64 with reduced quality for better performance
-                const imageData = canvasElement.toDataURL('image/jpeg', 0.7);
-                
-                // Send to server
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(imageData);
+                // Process every nth frame to reduce load
+                if (frameCount % (skipFrames + 1) === 0) {
+                    // Draw video frame to canvas
+                    canvas.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                    
+                    // Get image data directly from canvas
+                    const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                    
+                    // Convert to JPEG with lower quality for faster transfer
+                    const jpegData = canvasElement.toDataURL('image/jpeg', 0.6);
+                    
+                    // Send to server
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(jpegData);
+                    }
                 }
                 
                 lastFrameTime = currentTime;
@@ -344,10 +356,17 @@
         startButton.addEventListener('click', startCamera);
         stopButton.addEventListener('click', stopCamera);
         
-        // Set canvas size
+        // Set canvas size with optimization
         function resizeCanvas() {
-            canvasElement.width = videoElement.videoWidth || 640;
-            canvasElement.height = videoElement.videoHeight || 480;
+            const width = videoElement.videoWidth || 640;
+            const height = videoElement.videoHeight || 480;
+            
+            // Set canvas size to match video
+            canvasElement.width = width;
+            canvasElement.height = height;
+            
+            // Optimize canvas context
+            canvas.imageSmoothingEnabled = false;
         }
         
         videoElement.addEventListener('loadedmetadata', resizeCanvas);

@@ -141,11 +141,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Utility functions - adapted from test_video.py
+# Add caching for model instances
+model_cache = {}
+image_cropper_cache = None
+
+def get_model(device_id):
+    """Get or create model instance from cache."""
+    if device_id not in model_cache:
+        model_cache[device_id] = AntiSpoofPredict(device_id)
+    return model_cache[device_id]
+
+def get_image_cropper():
+    """Get or create image cropper instance from cache."""
+    global image_cropper_cache
+    if image_cropper_cache is None:
+        image_cropper_cache = CropImage()
+    return image_cropper_cache
+
 def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
     """Detect liveness from a single image."""
-    model_test = AntiSpoofPredict(device_id)
-    image_cropper = CropImage()
+    model_test = get_model(device_id)
+    image_cropper = get_image_cropper()
     
     # Get face bounding box
     image_bbox = model_test.get_bbox(image)
@@ -215,8 +231,8 @@ def detect_from_image(image, device_id=DEVICE_ID, confidence_threshold=CONFIDENC
 def detect_from_video(video_path, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD, 
                      smoothing_window=SMOOTHING_WINDOW, output_path=None):
     """Detect liveness from a video file - directly adapted from test_video.py."""
-    model_test = AntiSpoofPredict(device_id)
-    image_cropper = CropImage()
+    model_test = get_model(device_id)
+    image_cropper = get_image_cropper()
     
     # Open the video file
     cap = cv2.VideoCapture(video_path)
@@ -408,11 +424,11 @@ def encode_image_to_base64(image: np.ndarray) -> str:
         raise ValueError("Could not encode image")
     return base64.b64encode(encoded_image).decode('utf-8')
 
-# Add new function for real-time webcam detection
 def detect_from_webcam(frame, device_id=DEVICE_ID, confidence_threshold=CONFIDENCE_THRESHOLD):
     """Detect liveness from a webcam frame in real-time."""
-    model_test = AntiSpoofPredict(device_id)
-    image_cropper = CropImage()
+    # Get cached instances
+    model_test = get_model(device_id)
+    image_cropper = get_image_cropper()
     
     # Get face bounding box
     image_bbox = model_test.get_bbox(frame)
@@ -454,31 +470,11 @@ def detect_from_webcam(frame, device_id=DEVICE_ID, confidence_threshold=CONFIDEN
     else:
         result_text = "Fake Face"
     
-    # Create annotated image
-    annotated_image = frame.copy()
-    if is_real:
-        color = (0, 255, 0)  # Green for real
-    else:
-        color = (0, 0, 255)  # Red for fake
-    
-    # Draw bounding box and result
-    cv2.rectangle(
-        annotated_image,
-        (image_bbox[0], image_bbox[1]),
-        (image_bbox[0] + image_bbox[2], image_bbox[1] + image_bbox[3]),
-        color, 2)
-    cv2.putText(
-        annotated_image,
-        f"{result_text}: {value:.2f}",
-        (image_bbox[0], image_bbox[1] - 5),
-        cv2.FONT_HERSHEY_COMPLEX, 0.5*frame.shape[0]/1024, color)
-    
     return {
         "is_real": bool(is_real),
         "confidence": float(value),
         "label": int(label),
-        "bbox": [int(x) for x in image_bbox],
-        "annotated_image": annotated_image
+        "bbox": [int(x) for x in image_bbox]
     }
 
 # API Endpoints
